@@ -1,10 +1,17 @@
-# Lsm Tree
+# lsm_tree
 
-A zero-dependency Python CLI tool.
+Log-Structured Merge-tree (LSM-tree) key-value store
+
+Single-file, zero-dependency Python CLI tool.
 
 ## Usage
 
 ```bash
-python lsm_tree.py test
-python lsm_tree.py demo
+python lsm_tree.py --help
+```
+
+## Test
+
+```bash
+python -c "import lsm_tree; lsm_tree.test()"
 ```

@@ -1,74 +1,105 @@
 #!/usr/bin/env python3
-"""Log-Structured Merge Tree (LSM-Tree) simulation."""
-import sys, bisect
+"""Simplified LSM-tree key-value store."""
 
 class MemTable:
-    def __init__(self, max_size=8):
-        self.data, self.max_size = {}, max_size
-    def put(self, key, value): self.data[key] = value
-    def get(self, key): return self.data.get(key)
-    def delete(self, key): self.data[key] = None  # tombstone
-    def is_full(self): return len(self.data) >= self.max_size
-    def flush(self): items = sorted(self.data.items()); self.data.clear(); return items
+    def __init__(self, max_size=100):
+        self.data = {}
+        self.max_size = max_size
+    def put(self, key, value):
+        self.data[key] = value
+    def get(self, key):
+        return self.data.get(key)
+    def delete(self, key):
+        self.data[key] = None  # tombstone
+    def is_full(self):
+        return len(self.data) >= self.max_size
+    def flush(self):
+        """Return sorted list of (key, value) pairs."""
+        return sorted(self.data.items())
 
 class SSTable:
-    def __init__(self, items): self.items = items  # sorted list of (key, value)
+    def __init__(self, entries):
+        self.entries = entries  # sorted list of (key, value)
+        self._index = {k: i for i, (k, _) in enumerate(entries)}
     def get(self, key):
-        i = bisect.bisect_left(self.items, (key,))
-        if i < len(self.items) and self.items[i][0] == key:
-            return self.items[i][1]
-        return "__MISS__"
-    def scan(self, start=None, end=None):
-        result = []
-        for k, v in self.items:
-            if start and k < start: continue
-            if end and k >= end: break
-            if v is not None: result.append((k, v))
-        return result
+        i = self._index.get(key)
+        if i is not None:
+            return self.entries[i][1]
+        return KeyError
 
 class LSMTree:
-    def __init__(self, memtable_size=8, max_level_size=4):
-        self.mem = MemTable(memtable_size)
-        self.levels, self.max_level = [], max_level_size
+    def __init__(self, memtable_size=100):
+        self.memtable = MemTable(memtable_size)
+        self.sstables = []  # newest first
+        self._size = 0
+
     def put(self, key, value):
-        self.mem.put(key, value)
-        if self.mem.is_full(): self._flush()
-    def _flush(self):
-        items = self.mem.flush()
-        self.levels.insert(0, SSTable(items))
-        if len(self.levels) > self.max_level: self._compact()
-    def _compact(self):
-        merged = {}
-        for level in reversed(self.levels):
-            for k, v in level.items: merged[k] = v
-        self.levels = [SSTable(sorted(merged.items()))]
-    def get(self, key):
-        v = self.mem.get(key)
-        if v is not None: return v
-        if key in self.mem.data: return None  # tombstone
-        for sst in self.levels:
+        self.memtable.put(key, value)
+        self._size += 1
+        if self.memtable.is_full():
+            self._flush()
+
+    _TOMBSTONE = object()
+
+    def get(self, key, default=None):
+        # Check memtable first
+        if key in self.memtable.data:
+            v = self.memtable.data[key]
+            return default if v is None else v
+        # Check SSTables newest to oldest
+        for sst in self.sstables:
             v = sst.get(key)
-            if v != "__MISS__": return v
-        return None
-    def delete(self, key): self.mem.delete(key); self._flush_if_full()
-    def _flush_if_full(self):
-        if self.mem.is_full(): self._flush()
+            if v is not KeyError:
+                return default if v is None else v
+        return default
 
-def main():
-    if len(sys.argv) < 2: print("Usage: lsm_tree.py <demo|test>"); return
-    cmd = sys.argv[1]
-    if cmd == "demo":
-        t = LSMTree(memtable_size=4)
-        for i in range(20): t.put(f"key{i:02d}", f"val{i}")
-        print(f"key05: {t.get('key05')}, key15: {t.get('key15')}")
-    elif cmd == "test":
-        t = LSMTree(memtable_size=4, max_level_size=3)
-        for i in range(50): t.put(i, i*10)
-        for i in range(50): assert t.get(i) == i*10, f"Miss {i}"
-        t.put(25, 999); assert t.get(25) == 999
-        assert t.get(999) is None
-        t.delete(10)
-        # After compaction tombstones handled
-        print("All tests passed!")
+    def delete(self, key):
+        self.memtable.delete(key)
 
-if __name__ == "__main__": main()
+    def _flush(self):
+        entries = self.memtable.flush()
+        self.sstables.insert(0, SSTable(entries))
+        self.memtable = MemTable(self.memtable.max_size)
+
+    def compact(self):
+        """Merge all SSTables into one."""
+        if len(self.sstables) < 2:
+            return
+        merged = {}
+        for sst in reversed(self.sstables):
+            for k, v in sst.entries:
+                merged[k] = v
+        # Remove tombstones
+        entries = sorted((k, v) for k, v in merged.items() if v is not None)
+        self.sstables = [SSTable(entries)] if entries else []
+
+if __name__ == "__main__":
+    lsm = LSMTree(memtable_size=5)
+    for i in range(20):
+        lsm.put(f"key_{i:03d}", f"value_{i}")
+    print(f"SSTables: {len(lsm.sstables)}")
+    print(f"Get key_010: {lsm.get('key_010')}")
+
+def test():
+    lsm = LSMTree(memtable_size=5)
+    # Insert enough to trigger flushes
+    for i in range(20):
+        lsm.put(i, i * 10)
+    assert len(lsm.sstables) >= 3
+    # Read from various levels
+    assert lsm.get(0) == 0
+    assert lsm.get(19) == 190
+    assert lsm.get(999) is None
+    assert lsm.get(999, "nope") == "nope"
+    # Update
+    lsm.put(5, 9999)
+    assert lsm.get(5) == 9999
+    # Delete
+    lsm.delete(10)
+    assert lsm.get(10) is None
+    # Compact
+    lsm.compact()
+    assert len(lsm.sstables) <= 1
+    assert lsm.get(0) == 0
+    assert lsm.get(10) is None  # still deleted
+    print("  lsm_tree: ALL TESTS PASSED")
