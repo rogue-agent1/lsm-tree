@@ -1,88 +1,90 @@
 #!/usr/bin/env python3
-"""Log-Structured Merge tree (simplified). Zero dependencies."""
-import json, os, sys, time
-
-class MemTable:
-    def __init__(self, max_size=100):
-        self.data = {}
-        self.max_size = max_size
-
-    def put(self, key, value):
-        self.data[key] = value
-
-    def get(self, key):
-        return self.data.get(key)
-
-    def delete(self, key):
-        self.data[key] = None  # tombstone
-
-    def is_full(self):
-        return len(self.data) >= self.max_size
-
-    def flush(self):
-        items = sorted(self.data.items())
-        self.data.clear()
-        return items
+"""Log-Structured Merge Tree (simplified in-memory)."""
 
 class SSTable:
-    def __init__(self, items, level=0):
-        self.items = items  # sorted list of (key, value)
-        self.level = level
-        self.index = {k: i for i, (k, _) in enumerate(items)}
+    def __init__(self, data: dict):
+        self.data = dict(sorted(data.items()))
+        self.keys = sorted(data.keys())
 
     def get(self, key):
-        if key in self.index:
-            return self.items[self.index[key]][1]
+        lo, hi = 0, len(self.keys) - 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if self.keys[mid] == key:
+                v = self.data[key]
+                return v if v is not None else None
+            elif self.keys[mid] < key:
+                lo = mid + 1
+            else:
+                hi = mid - 1
         return None
 
     def __len__(self):
-        return len(self.items)
+        return len(self.keys)
 
 class LSMTree:
-    def __init__(self, memtable_size=100):
-        self.memtable = MemTable(memtable_size)
+    def __init__(self, memtable_size: int = 10):
+        self.memtable_size = memtable_size
+        self.memtable = {}
         self.sstables = []
 
-    def put(self, key, value):
-        self.memtable.put(key, value)
-        if self.memtable.is_full():
+    def put(self, key: str, value):
+        self.memtable[key] = value
+        if len(self.memtable) >= self.memtable_size:
             self._flush()
 
-    def get(self, key):
-        val = self.memtable.get(key)
-        if val is not None: return val if val is not None else None
-        if key in self.memtable.data: return None  # tombstone
+    def get(self, key: str):
+        if key in self.memtable:
+            v = self.memtable[key]
+            return v if v is not "__TOMBSTONE__" else None
         for sst in reversed(self.sstables):
-            val = sst.get(key)
-            if val is not None: return val
+            v = sst.get(key)
+            if v is not None:
+                return v if v != "__TOMBSTONE__" else None
         return None
 
-    def delete(self, key):
-        self.memtable.delete(key)
+    def delete(self, key: str):
+        self.memtable[key] = "__TOMBSTONE__"
+        if len(self.memtable) >= self.memtable_size:
+            self._flush()
 
     def _flush(self):
-        items = self.memtable.flush()
-        self.sstables.append(SSTable(items, level=0))
-        if len(self.sstables) > 4:
-            self._compact()
+        if self.memtable:
+            self.sstables.append(SSTable(dict(self.memtable)))
+            self.memtable = {}
 
-    def _compact(self):
+    def compact(self):
+        if len(self.sstables) < 2:
+            return
         merged = {}
         for sst in self.sstables:
-            for k, v in sst.items:
-                merged[k] = v
-        # Remove tombstones
-        merged = {k: v for k, v in merged.items() if v is not None}
-        self.sstables = [SSTable(sorted(merged.items()), level=1)]
+            merged.update(sst.data)
+        merged = {k: v for k, v in merged.items() if v != "__TOMBSTONE__"}
+        self.sstables = [SSTable(merged)] if merged else []
 
-    def stats(self):
-        return {"memtable_size": len(self.memtable.data),
-                "sstables": len(self.sstables),
-                "total_entries": len(self.memtable.data) + sum(len(s) for s in self.sstables)}
+    @property
+    def size(self):
+        return len(self.memtable) + sum(len(s) for s in self.sstables)
+
+def test():
+    lsm = LSMTree(5)
+    for i in range(20):
+        lsm.put(f"key{i:03d}", f"val{i}")
+    assert lsm.get("key000") == "val0"
+    assert lsm.get("key019") == "val19"
+    assert lsm.get("missing") is None
+    assert len(lsm.sstables) >= 1
+    # Update
+    lsm.put("key000", "updated")
+    assert lsm.get("key000") == "updated"
+    # Delete
+    lsm.delete("key005")
+    assert lsm.get("key005") is None
+    # Compact
+    lsm.compact()
+    assert lsm.get("key010") == "val10"
+    assert lsm.get("key005") is None
+    print("  lsm_tree: ALL TESTS PASSED")
 
 if __name__ == "__main__":
-    lsm = LSMTree(memtable_size=50)
-    for i in range(200):
-        lsm.put(f"key_{i:04d}", f"value_{i}")
-    print(f"Get key_0100: {lsm.get('key_0100')}")
-    print(f"Stats: {lsm.stats()}")
+    test()

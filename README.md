@@ -1,9 +1,11 @@
 # lsm-tree
 
-Log-Structured Merge tree (simplified). Zero dependencies, single file, Python 3.8+.
+Log-Structured Merge Tree (simplified)
+
+Zero-dependency, single-file Python 3.8+ CLI tool.
 
 ## Usage
 
 ```bash
-python3 lsm_tree.py --help
+python lsm_tree.py
 ```
