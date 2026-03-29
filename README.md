@@ -1,17 +1,9 @@
-# lsm_tree
+# lsm-tree
 
-Log-Structured Merge-tree (LSM-tree) key-value store
-
-Single-file, zero-dependency Python CLI tool.
+Log-Structured Merge tree (simplified). Zero dependencies, single file, Python 3.8+.
 
 ## Usage
 
 ```bash
-python lsm_tree.py --help
-```
-
-## Test
-
-```bash
-python -c "import lsm_tree; lsm_tree.test()"
+python3 lsm_tree.py --help
 ```
